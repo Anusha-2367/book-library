@@ -1,0 +1,13 @@
+{
+  "name": "book-library",
+  "version": "1.0.0",
+  "description": "Sample Book Library app for Terraform + GitHub Actions + Azure demo",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --check server.js"
+  },
+  "dependencies": {
+    "express": "4.19.2"
+  }
+}

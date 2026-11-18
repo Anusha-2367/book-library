@@ -1,0 +1,16 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+secrets.auto.tfvars
+*.auto.tfvars
+# (commit .terraform.lock.hcl, do NOT ignore it)
+
+# Node
+node_modules/
+npm-debug.log
+
+# OS / editor
+.DS_Store
+.vscode/

@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Book Library</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
+    h1 { margin-bottom: 4px; }
+    #env { color: #555; font-size: 14px; margin-bottom: 20px; }
+    form { display: flex; gap: 8px; margin-bottom: 20px; }
+    input { flex: 1; padding: 8px; }
+    button { padding: 8px 14px; cursor: pointer; }
+    li { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #ddd; }
+  </style>
+</head>
+<body>
+  <h1>Book Library</h1>
+  <div id="env"></div>
+  <form id="form">
+    <input id="title" placeholder="Title" required />
+    <input id="author" placeholder="Author" required />
+    <button type="submit">Add</button>
+  </form>
+  <ul id="list"></ul>
+
+  <script>
+    async function loadInfo() {
+      const i = await (await fetch("/api/info")).json();
+      document.getElementById("env").textContent =
+        `Environment: ${i.environment} | Version: ${i.version} | Key Vault secret: ${i.keyVaultSecretLoaded ? "loaded" : "not set"}`;
+    }
+    async function loadBooks() {
+      const books = await (await fetch("/api/books")).json();
+      const list = document.getElementById("list");
+      list.innerHTML = "";
+      books.forEach((b) => {
+        const li = document.createElement("li");
+        li.innerHTML = `<span><b></b> by <i></i></span><button>Delete</button>`;
+        li.querySelector("b").textContent = b.title;
+        li.querySelector("i").textContent = b.author;
+        li.querySelector("button").onclick = async () => {
+          await fetch("/api/books/" + b.id, { method: "DELETE" });
+          loadBooks();
+        };
+        list.appendChild(li);
+      });
+    }
+    document.getElementById("form").onsubmit = async (e) => {
+      e.preventDefault();
+      const title = document.getElementById("title").value;
+      const author = document.getElementById("author").value;
+      await fetch("/api/books", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, author }),
+      });
+      e.target.reset();
+      loadBooks();
+    };
+    loadInfo();
+    loadBooks();
+  </script>
+</body>
+</html>
