@@ -1,0 +1,256 @@
+
+name: Book Library - DEV and PROD CI/CD
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: book-library-deployment
+  cancel-in-progress: false
+
+jobs:
+
+  # -------------------------------------------------
+  # JOB 1: Build and deploy to DEV
+  # -------------------------------------------------
+  deploy-dev:
+    name: Provision and Deploy DEV
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 45
+
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: true
+      TF_VAR_app_secret_value: ${{ secrets.APP_SECRET_VALUE }}
+
+    outputs:
+      resource_group: ${{ steps.tf-outputs.outputs.resource_group }}
+      acr_name: ${{ steps.tf-outputs.outputs.acr_name }}
+      acr_login_server: ${{ steps.tf-outputs.outputs.acr_login_server }}
+      web_app_name: ${{ steps.tf-outputs.outputs.web_app_name }}
+      web_app_url: ${{ steps.tf-outputs.outputs.web_app_url }}
+      image_tag: ${{ steps.image-info.outputs.image_tag }}
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Azure login using OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform format check
+        run: terraform fmt -check -recursive
+
+      - name: Terraform initialize DEV
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config=environments/dev.backend.hcl \
+            -backend-config="use_oidc=true"
+
+      - name: Terraform validate
+        working-directory: terraform
+        run: terraform validate
+
+      - name: Terraform plan DEV
+        working-directory: terraform
+        run: |
+          terraform plan \
+            -var-file=environments/dev.tfvars \
+            -out=tfplan
+
+      - name: Terraform apply DEV
+        working-directory: terraform
+        run: terraform apply -auto-approve tfplan
+
+      - name: Read DEV Terraform outputs
+        id: tf-outputs
+        working-directory: terraform
+        shell: bash
+        run: |
+          echo "resource_group=$(terraform output -raw resource_group_name)" >> "$GITHUB_OUTPUT"
+          echo "acr_name=$(terraform output -raw acr_name)" >> "$GITHUB_OUTPUT"
+          echo "acr_login_server=$(terraform output -raw acr_login_server)" >> "$GITHUB_OUTPUT"
+          echo "web_app_name=$(terraform output -raw web_app_name)" >> "$GITHUB_OUTPUT"
+          echo "web_app_url=$(terraform output -raw web_app_url)" >> "$GITHUB_OUTPUT"
+
+      - name: Set Docker image tag
+        id: image-info
+        run: |
+          echo "image_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to DEV ACR
+        run: |
+          az acr login --name "${{ steps.tf-outputs.outputs.acr_name }}"
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t "${{ steps.tf-outputs.outputs.acr_login_server }}/book-library:${GITHUB_SHA}" \
+            ./app
+
+      - name: Push Docker image to DEV ACR
+        run: |
+          docker push \
+            "${{ steps.tf-outputs.outputs.acr_login_server }}/book-library:${GITHUB_SHA}"
+
+      - name: Deploy application to DEV App Service
+        run: |
+          az webapp config container set \
+            --name "${{ steps.tf-outputs.outputs.web_app_name }}" \
+            --resource-group "${{ steps.tf-outputs.outputs.resource_group }}" \
+            --docker-custom-image-name "${{ steps.tf-outputs.outputs.acr_login_server }}/book-library:${GITHUB_SHA}" \
+            --docker-registry-server-url "https://${{ steps.tf-outputs.outputs.acr_login_server }}"
+
+          az webapp config appsettings set \
+            --name "${{ steps.tf-outputs.outputs.web_app_name }}" \
+            --resource-group "${{ steps.tf-outputs.outputs.resource_group }}" \
+            --settings "APP_VERSION=${GITHUB_SHA}" \
+            --output none
+
+          az webapp restart \
+            --name "${{ steps.tf-outputs.outputs.web_app_name }}" \
+            --resource-group "${{ steps.tf-outputs.outputs.resource_group }}"
+
+      - name: DEV smoke test
+        shell: bash
+        run: |
+          URL="${{ steps.tf-outputs.outputs.web_app_url }}"
+
+          for i in {1..30}; do
+            if curl -fsS "$URL/health"; then
+              echo "DEV health check successful"
+              exit 0
+            fi
+
+            echo "Waiting for DEV application..."
+            sleep 10
+          done
+
+          echo "DEV smoke test failed"
+          exit 1
+
+
+  # -------------------------------------------------
+  # JOB 2: Approval, provision and deploy to PROD
+  # -------------------------------------------------
+  deploy-prod:
+    name: Approval and Deploy PROD
+    runs-on: ubuntu-latest
+    needs: deploy-dev
+    environment: prod
+    timeout-minutes: 45
+
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: true
+      TF_VAR_app_secret_value: ${{ secrets.APP_SECRET_VALUE }}
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Azure login using OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform initialize PROD
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config=environments/prod.backend.hcl \
+            -backend-config="use_oidc=true"
+
+      - name: Terraform validate
+        working-directory: terraform
+        run: terraform validate
+
+      - name: Terraform plan PROD
+        working-directory: terraform
+        run: |
+          terraform plan \
+            -var-file=environments/prod.tfvars \
+            -out=tfplan
+
+      - name: Terraform apply PROD
+        working-directory: terraform
+        run: terraform apply -auto-approve tfplan
+
+      - name: Read PROD Terraform outputs
+        id: tf-outputs
+        working-directory: terraform
+        shell: bash
+        run: |
+          echo "resource_group=$(terraform output -raw resource_group_name)" >> "$GITHUB_OUTPUT"
+          echo "acr_name=$(terraform output -raw acr_name)" >> "$GITHUB_OUTPUT"
+          echo "acr_login_server=$(terraform output -raw acr_login_server)" >> "$GITHUB_OUTPUT"
+          echo "web_app_name=$(terraform output -raw web_app_name)" >> "$GITHUB_OUTPUT"
+          echo "web_app_url=$(terraform output -raw web_app_url)" >> "$GITHUB_OUTPUT"
+
+      - name: Promote tested image from DEV ACR to PROD ACR
+        run: |
+          az acr import \
+            --name "${{ steps.tf-outputs.outputs.acr_name }}" \
+            --source "${{ needs.deploy-dev.outputs.acr_login_server }}/book-library:${{ needs.deploy-dev.outputs.image_tag }}" \
+            --image "book-library:${{ needs.deploy-dev.outputs.image_tag }}"
+
+      - name: Deploy tested image to PROD App Service
+        run: |
+          az webapp config container set \
+            --name "${{ steps.tf-outputs.outputs.web_app_name }}" \
+            --resource-group "${{ steps.tf-outputs.outputs.resource_group }}" \
+            --docker-custom-image-name "${{ steps.tf-outputs.outputs.acr_login_server }}/book-library:${{ needs.deploy-dev.outputs.image_tag }}" \
+            --docker-registry-server-url "https://${{ steps.tf-outputs.outputs.acr_login_server }}"
+
+          az webapp config appsettings set \
+            --name "${{ steps.tf-outputs.outputs.web_app_name }}" \
+            --resource-group "${{ steps.tf-outputs.outputs.resource_group }}" \
+            --settings "APP_VERSION=${{ needs.deploy-dev.outputs.image_tag }}" \
+            --output none
+
+          az webapp restart \
+            --name "${{ steps.tf-outputs.outputs.web_app_name }}" \
+            --resource-group "${{ steps.tf-outputs.outputs.resource_group }}"
+
+      - name: PROD smoke test
+        shell: bash
+        run: |
+          URL="${{ steps.tf-outputs.outputs.web_app_url }}"
+
+          for i in {1..30}; do
+            if curl -fsS "$URL/health"; then
+              echo "PROD health check successful"
+              exit 0
+            fi
+
+            echo "Waiting for PROD application..."
+            sleep 10
+          done
+
+          echo "PROD smoke test failed"
+          exit 1

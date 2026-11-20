@@ -1,3 +1,3 @@
 environment     = "prod"
-location        = "central us"
+location        = "East US"
 app_service_sku = "B1"

@@ -17,7 +17,7 @@ variable "environment" {
 variable "location" {
   description = "Azure region"
   type        = string
-  default     = "central us"
+  default     = "East US"
 }
 
 variable "app_service_sku" {
